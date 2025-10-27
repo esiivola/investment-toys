@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+    <meta charset="utf-8">
+    <title>Tuottolaskuri</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    
+    <!-- Libraries -->
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-MML-AM_CHTML" async></script>
+    <script type="text/x-mathjax-config">
+        MathJax.Hub.Config({
+            tex2jax: { inlineMath: [['$', '$'], ['\\(', '\\)']] }
+        });
+    </script>
+
+    <!-- Styles -->
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 10px;
+            padding: 0;
+        }
+        h2 {
+            text-align: center;
+        }
+        .input-group, .text-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin: auto;
+            max-width: 600px;
+        }
+        .input-group label {
+            font-weight: bold;
+        }
+        .input-group input {
+            padding: 6px;
+            font-size: 16px;
+        }
+        .button-group {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        button {
+            font-size: 1.1em;
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+        }
+        #plot {
+            width: 100%;
+            max-width: 1000px;
+            margin: auto;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>Sijoitussuunnitelma</h2>
+
+    <!-- Input Fields -->
+    <div class="input-group">
+        <p>Oletukset: vakiotuotto-% ja sijoitus tehdään kuun 1. päivä.</p>
+
+        <label for="interest">Vuosituotto-%:</label>
+        <input id="interest" value="5" oninput="Utils.formatAndValidate(this, true)">
+
+        <label for="monthly_investment">Kuukausisäästö (€):</label>
+        <input id="monthly_investment" value="500" oninput="Utils.formatAndValidate(this)">
+
+        <label for="initial_money">Alkupääoma (€):</label>
+        <input id="initial_money" value="10 000" oninput="Utils.formatAndValidate(this)">
+
+        <label for="max_t">Sijoitusaika (vuosissa):</label>
+        <input id="max_t" value="20" oninput="Utils.formatAndValidate(this)">
+
+        <div class="button-group">
+            <button onclick="PlotManager.addLine()">Lisää kuvaan uusi viiva</button>
+        </div>
+    </div>
+
+    <!-- Plot Container -->
+    <div id="plot"></div>
+
+    <!-- Control Buttons -->
+    <div class="button-group">
+        <button onclick="PlotManager.clearPlot()">Tyhjennä kuva</button>
+        <button onclick="PlotManager.downloadPlot()">Lataa kuva .png-tiedostona</button>
+    </div>
+
+    <!-- Math Explanation -->
+    <div class="text-group">
+        <p>Vuosituotosta $R$ saadaan laskettua kuukausituotto kaavalla $r = (1+R)^{1/12}-1$</p>
+        <p>Alkuinvestoinnin $A$ tuotto $n$ kuukauden jälkeen on $A(1+r)^n$</p>
+        <p>Kuukausisäästön $I$, joka on sijoitettu kuukautena $m$ tuotto $n$ kuukauden lopussa ($m\\leq n$) on $I(1+r)^{n-m+1}$</p>
+        <p>Kaikkien kuukausi-investointien tuotto $n$ kuukauden jälkeen muodostaa geometrisen sarjan summan:</p>
+        <p>$$\sum_{i=1}^n I(1+r)^{n-i+1} = I(1+r)\frac{(1+r)^n-1}{r}$$</p>
+        <p>Näinollen koko sijoitusstrategian tuotto $n$ kuukauden jälkeen on $$A(1+r)^n + I(1+r)\frac{(1+r)^n-1}{r}$$</p>
+    </div>
+
+    <!-- Main Script -->
+    <script>
+        /********************
+         * Utility Functions *
+         ********************/
+        const Utils = {
+            formatAndValidate(input, allowDecimal = false) {
+                let raw = input.value.replace(/\s/g, '').replace(/,/g, '');
+                let regex = allowDecimal ? /^\d*(\.\d*)?$/ : /^\d*$/;
+                if (!regex.test(raw)) {
+                    input.value = input.value.slice(0, -1);
+                    return;
+                }
+                if (raw === '') return;
+                let parts = raw.split('.');
+                parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+                input.value = parts.join('.');
+            },
+
+            parseNumber(value) {
+                return value ? parseFloat(value.replace(/\s/g, '').replace(/,/g, '')) || 0 : 0;
+            },
+
+            formatNumber(num) {
+                return new Intl.NumberFormat('fi-FI', {
+                    minimumFractionDigits: num % 1 === 0 ? 0 : 1,
+                    maximumFractionDigits: 10,
+                    useGrouping: true
+                }).format(num);
+            }
+        };
+
+        /********************
+         * Plot Management  *
+         ********************/
+        const PlotManager = (() => {
+            let traces = [];
+            let colorIndex = 0;
+            let maxY = 0;
+            const maxYears = 100;
+            const colors = [
+                'blue', 'red', 'green', 'orange', 'purple', 'brown',
+                'teal', 'magenta', 'gold', 'cyan'
+            ];
+
+            /** Compute investment growth */
+            function computeValues(initial, monthly, annualRate, years) {
+                const monthlyRate = Math.pow(1 + annualRate / 100, 1 / 12) - 1;
+                const tValues = [];
+                const fValues = [];
+                for (let t = 0; t <= maxYears * 12; t++) {
+                    tValues.push(t / 12);
+                    const f =
+                        initial * Math.pow(1 + monthlyRate, t) +
+                        monthly * (1 + monthlyRate) * (Math.pow(1 + monthlyRate, t) - 1) / monthlyRate;
+                    fValues.push(f);
+                }
+                return { tValues, fValues };
+            }
+
+            /** Add a new investment line to the plot */
+            function addLine() {
+                const years = Utils.parseNumber(document.getElementById('max_t').value);
+                const annualRate = Utils.parseNumber(document.getElementById('interest').value);
+                const monthlyInvestment = Utils.parseNumber(document.getElementById('monthly_investment').value);
+                const initial = Utils.parseNumber(document.getElementById('initial_money').value);
+
+                const { tValues, fValues } = computeValues(initial, monthlyInvestment, annualRate, years);
+                maxY = Math.max(maxY, fValues[years * 12]);
+
+                const color = colors[colorIndex++ % colors.length];
+                const name = `alussa ${Utils.formatNumber(initial)}€; säästöön ${Utils.formatNumber(monthlyInvestment)}€/kk; vuosituotto-% ${Utils.formatNumber(annualRate)}`;
+
+                traces.push({ x: tValues, y: fValues, mode: 'lines', name, line: { color } });
+                renderPlot(years);
+            }
+
+            /** Render the plot with all current traces */
+            function renderPlot(maxYears) {
+                Plotly.newPlot('plot', traces, {
+                    title: 'Kokonaisvarallisuus ajan funktiona',
+                    xaxis: { title: 'Aika (vuosissa)', range: [0, maxYears] },
+                    yaxis: { title: 'Varallisuus (€)', range: [0, maxY] },
+                    legend: { orientation: 'h', y: 1.1 },
+                    margin: { t: 60 }
+                });
+            }
+
+            /** Clear the plot */
+            function clearPlot() {
+                traces = [];
+                colorIndex = 0;
+                maxY = 0;
+                renderPlot(20);
+            }
+
+            /** Download the plot as PNG */
+            function downloadPlot() {
+                Plotly.toImage(document.getElementById('plot'), { format: 'png', height: 500, width: 1000 })
+                    .then(url => {
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'sijoitusstrategia.png';
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                    });
+            }
+
+            // Public API
+            return { addLine, clearPlot, downloadPlot };
+        })();
+
+        // Initialize with empty plot
+        PlotManager.clearPlot();
+    </script>
+</body>
+</html>

@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+  <meta charset="utf-8" />
+  <title>Sijoitussimulaattori</title>
+
+  <!-- Plotly -->
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+  <!-- MathJax -->
+  <script type="text/x-mathjax-config">
+    MathJax.Hub.Config({tex2jax: {inlineMath: [['$','$'], ['\\(','\\)']]}}); 
+  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-MML-AM_CHTML" async></script>
+
+  <!-- Math.js (for median/quantile) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.min.js"></script>
+
+  <style>
+    body { font-family: Arial, sans-serif; margin: 12px; max-width: 1100px; }
+    h1 { text-align: center; margin-bottom: 6px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .panel { border: 1px solid #ddd; padding: 12px; border-radius: 8px; background: #fafafa; }
+    .controls { flex: 1 1 320px; min-width: 300px; }
+    .plotarea { flex: 2 1 620px; min-width: 520px; }
+    label { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 4px; font-weight: 600; }
+    input[type="number"], select { width: 100%; padding: 6px; font-size: 14px; }
+    .small { font-size: 13px; color: #444; margin-top: 4px; }
+    .param-row { margin-bottom: 8px; }
+    .tooltip-btn { display:inline-block; margin-left:6px; color:#0077cc; cursor:pointer; font-weight:700; }
+    .tooltip-popup {
+      display:none;
+      position: relative;
+      background:#222; color:#fff; padding:10px; border-radius:6px; font-size:13px; margin-top:6px;
+    }
+    .tooltip-popup.show { display:block; }
+    .param-block {margin-left: 10px; margin-bottom: 10px; }
+    .param-block.with-line { border-left: 1px solid #ccc; padding-left: 10px; }
+    .input-row {display: flex; gap: 10px;}
+    .input-row-item {flex: 1;}
+    #plot, #hist, #timeline, #timeline-smoothed, #boxplot-decade, #boxplot-month { margin-top: 12px; }
+    .actions { margin-top: 12px; display:flex; gap:8px; flex-wrap:wrap; }
+    button { padding:8px 12px; font-size:14px; border-radius:6px; cursor:pointer; }
+    .legend-note { font-size:13px; color:#333; margin-top:6px; }
+    .theory { margin-top: 20px; border-top:1px solid #ddd; padding-top:12px; }
+    .method { margin-bottom: 18px; }
+    a.ref { color:#0077cc; text-decoration: none; }
+    .mu-sigma { margin-top:8px; font-size:14px; }
+  </style>
+</head>
+<body>
+  <h1>Sijoitussimulaattori</h1>
+
+  <div class="row">
+    <div class="panel controls">
+      <h3>Sijoitusstrategia</h3>
+      <div class="param-block">
+        <label>Alkupääoma (€)</label>
+        <input id="initial" type="number" value="10000" min="0" step="5000">
+
+        <label>Kuukausisijoitus (€)</label>
+        <input id="monthly" type="number" value="500" min="0" step="100">
+
+        <label>Sijoitusaika (vuosissa)</label>
+        <input id="years" type="number" value="30" min="1" step="5">
+      </div>
+
+      <h3>Simulointimenetelmä</h3>
+      <div class="param-block">
+
+        <label>Replikoitava pörssikurssi</label>
+        <select id="stock"></select>
+
+        <div class="param-block with-line">
+          <div class="input-row">
+            <div class="input-row-item">
+              <label>Aloituspäivä</label>
+              <select id="start"></select>
+            </div>
+            <div class="input-row-item">
+              <label>Lopetuspäivä</label>
+              <select id="end"></select>
+            </div>
+          </div>
+          <div id="muSigma" class="mu-sigma small"></div>
+        </div>
+
+        <label>Simulointimenetelmä</label>
+        <select id="method">
+          <option value="gbm">GBM (Geometric Brownian Motion)</option>
+          <option value="jump">Jump Diffusion</option>
+          <option value="heston">Heston</option>
+          <option value="resample_random">Resample (Random Returns)</option>
+          <option value="resample_seq">Resample (Sequential)</option>
+        </select>
+
+        <div id="params" class="param-block with-line">
+          <div id="gbm" style="display:block">
+            <div class="param-row">
+              <label>Vuosittainen drift μ (%)
+                <span class="tooltip-btn" data-target="gbm-mean">Info</span>
+              </label>
+              <input id="mean" type="number" value="7" step="1" min="-100" max="100">
+              <div id="gbm-mean" class="tooltip-popup">
+                Drift kuvaa keskimääräistä vuotuista tuottoa (trendikomponentti).
+              </div>
+            </div>
+            <div class="param-row">
+              <label>Vuosittainen volatiliteetti σ (%)
+                <span class="tooltip-btn" data-target="gbm-sigma">Info</span>
+              </label>
+              <input id="sigma" type="number" value="10" step="1" min="0" max="100">
+              <div id="gbm-sigma" class="tooltip-popup">
+                Volatiliteetti mittaa hinnan vaihtelua.
+              </div>
+            </div>
+          </div>
+
+          <div id="jump" style="display:none">
+            <div class="param-row">
+              <label>Jump frequency λ (kpl / kk)
+                <span class="tooltip-btn" data-target="t-jump-lam">Info</span>
+              </label>
+              <input id="jumpLambda" type="number" value="0.1" step="0.01" min="0" max="1">
+              <div id="t-jump-lam" class="tooltip-popup">
+                Keskimääräinen hyppyjen lukumäärä kuukaudessa.
+              </div>
+            </div>
+            <div class="param-row">
+              <label>Jump mean μ<sub>J</sub> (%) <span class="tooltip-btn" data-target="t-jump-mu">Info</span></label>
+              <input id="jumpMu" type="number" value="2" step="0.1">
+              <div id="t-jump-mu" class="tooltip-popup">
+                Hyppyjen keskimääräinen koko (prosentteina).
+              </div>
+            </div>
+            <div class="param-row">
+              <label>Jump volatility σ<sub>J</sub> (%) <span class="tooltip-btn" data-target="t-jump-sig">Info</span></label>
+              <input id="jumpSigma" type="number" value="5" step="0.1">
+              <div id="t-jump-sig" class="tooltip-popup">
+                Hyppyjen kokojen hajonta.
+              </div>
+            </div>
+          </div>
+
+          <div id="heston" style="display:none">
+            <div class="param-row">
+              <label>mu <span class="tooltip-btn" data-target="heston-mu">Info</span></label>
+              <input id="hMu" type="number" value="0.05" step="0.01" min="0" max="1">
+              <div id="heston-mu" class="tooltip-popup">Heston: drift</div>
+            </div>
+            <div class="param-row">
+              <label>theta <span class="tooltip-btn" data-target="heston-theta">Info</span></label>
+              <input id="hTheta" type="number" value="0.05" step="0.01" min="0" max="1">
+              <div id="heston-theta" class="tooltip-popup">Heston: pitkän ajan varianssi</div>
+            </div>
+            <div class="param-row">
+              <label>kappa <span class="tooltip-btn" data-target="heston-kappa">Info</span></label>
+              <input id="hKappa" type="number" value="0.05" step="0.01" min="0" max="1">
+              <div id="heston-kappa" class="tooltip-popup">Heston: nopeus kohti thetaa</div>
+            </div>
+            <div class="param-row">
+              <label>sigma <span class="tooltip-btn" data-target="heston-sigma">Info</span></label>
+              <input id="hSigma" type="number" value="0.05" step="0.01" min="0" max="1">
+              <div id="heston-sigma" class="tooltip-popup">Heston: vol-of-vol</div>
+            </div>
+            <div class="param-row">
+              <label>rho <span class="tooltip-btn" data-target="heston-rho">Info</span></label>
+              <input id="hRho" type="number" value="0.05" step="0.01" min="-1" max="1">
+              <div id="heston-rho" class="tooltip-popup">Heston: korrelaatio prosessien välillä</div>
+            </div>
+            <div class="param-row">
+              <label>v<sub>0</sub> <span class="tooltip-btn" data-target="heston-v0">Info</span></label>
+              <input id="hV0" type="number" value="0.05" step="0.01" min="0" max="1">
+              <div id="heston-v0" class="tooltip-popup">Heston: aloitusvarianssi</div>
+            </div>
+          </div>
+
+        </div>
+
+        <label>Satunnaistoistojen määrä</label>
+        <input id="numSim" type="number" value="100" min="1" step="50">
+        <div class="param-block with-line">
+          <label>Näytettävät satunnaistoistot</label>
+          <input id="numShow" type="number" value="10" min="1" step="5">
+          <label><input id="showActual" type="checkbox" checked> Näytä vertailutulos toteutuneilla hinnoilla</label>
+        </div>
+
+      </div>
+
+      <div class="actions">
+        <button id="simulateBtn">Simuloi</button>
+        <button id="downloadBtn">Lataa kuva (.png)</button>
+      </div>
+    </div>
+
+    <div class="panel plotarea">
+      <div id="plot" style="height:540px;"></div>
+      <div id="hist" style="height:260px; margin-top:12px;"></div>
+      <div id="timeline" style="height:360px; margin-top:12px;"></div>
+      <div id="timeline-smoothed" style="height:360px; margin-top:12px;"></div>
+      <div id="boxplot-decade" style="height:360px; margin-top:12px;"></div>
+      <div id="boxplot-month" style="height:360px; margin-top:12px;"></div>
+    </div>
+  </div>
+
+  <script>
+  // ----------------------
+  // Utilities & state
+  // ----------------------
+  let stockData = {};
+  let returns = [];        // multiplicative returns per month (e.g. 1.02)
+  let logReturns = [];     // log returns
+  let dates = [];
+  let _start = null, _end = null, _stock = null;
+
+  function initTooltips() {
+    document.querySelectorAll('.tooltip-btn').forEach(btn=>{
+      btn.onclick = (e)=>{
+        const id = btn.getAttribute('data-target');
+        const el = document.getElementById(id);
+        document.querySelectorAll('.tooltip-popup').forEach(p=>{ if (p!==el) p.classList.remove('show'); });
+        el.classList.toggle('show');
+        e.stopPropagation();
+      };
+    });
+    document.addEventListener('click', ()=> document.querySelectorAll('.tooltip-popup').forEach(p=>p.classList.remove('show')));
+  }
+
+  // Small Box-Muller normal generator
+  function randn_bm() {
+    let u=0,v=0;
+    while(u===0) u=Math.random();
+    while(v===0) v=Math.random();
+    return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
+  }
+
+  // ----------------------
+  // Model registry (extensible)
+  // Each model must implement simulate(params, initial, monthly, nSteps, dt)
+  // It should return an array of length nSteps+1 with portfolio values (first element initial).
+  // ----------------------
+  const Models = {
+    gbm: {
+      name: "GBM",
+      simulate: function(params, initial, monthly, nSteps, dt) {
+        const [mu, sigma] = params;
+        let V = initial;
+        const path = [V];
+        for (let i=1;i<=nSteps;i++){
+          const z = randn_bm();
+          const r = (mu - 0.5*sigma*sigma)*dt + sigma*Math.sqrt(dt)*z;
+          V = (V + monthly) * Math.exp(r);
+          path.push(V);
+        }
+        return path;
+      }
+    },
+    jump: {
+      name: "Jump Diffusion",
+      simulate: function(params, initial, monthly, nSteps, dt) {
+        const [mu, sigma, lambda, jumpMu, jumpSigma] = params;
+        let V = initial;
+        const path = [V];
+        for (let i=1;i<=nSteps;i++){
+          const z = randn_bm();
+          const jump = (Math.random() < lambda) ? (jumpMu + jumpSigma*randn_bm()) : 0;
+          const r = (mu - 0.5*sigma*sigma)*dt + sigma*Math.sqrt(dt)*z + jump;
+          V = (V + monthly) * Math.exp(r);
+          path.push(V);
+        }
+        return path;
+      }
+    },
+    heston: {
+      name: "Heston",
+      simulate: function(params, initial, monthly, nSteps, dt=1/12) {
+        // params: [mu, theta, kappa, sigma, rho, v0]
+        const [mu, theta, kappa, volSigma, rho, v0] = params;
+        let V = initial;
+        let v = v0;
+        const path = [V];
+        for (let i=1;i<=nSteps;i++){
+          const Z1 = randn_bm();
+          const Z2 = randn_bm();
+          const W1 = Z1;
+          const W2 = rho*Z1 + Math.sqrt(Math.max(0,1-rho*rho))*Z2;
+          const R = Math.exp((mu - 0.5*v)*dt + Math.sqrt(Math.max(0,v))*Math.sqrt(dt)*W1);
+          v = Math.abs(v + kappa*(theta - v)*dt + volSigma*Math.sqrt(Math.max(0,v))*Math.sqrt(dt)*W2);
+          V = (V + monthly) * R;
+          path.push(V);
+        }
+        return path;
+      }
+    },
+    resample_random: {
+      name: "Resample (Random Returns)",
+      simulate: function(params, initial, monthly, nSteps, dt) {
+        // params unused; uses global `returns`
+        let V = initial;
+        const path = [V];
+        for (let i=1;i<=nSteps;i++){
+          const r = returns[Math.floor(Math.random()*returns.length)];
+          V = (V + monthly) * r;
+          path.push(V);
+        }
+        return path;
+      }
+    },
+    resample_seq: {
+      name: "Resample (Sequential)",
+      simulate: function(params, initial, monthly, nSteps, dt) {
+        let startIdx = Math.floor(Math.random() * Math.max(1, returns.length));
+        let V = initial;
+        const path = [V];
+        for (let i=1;i<=nSteps;i++){
+          const r = returns[startIdx % returns.length];
+          startIdx++;
+          V = (V + monthly) * r;
+          path.push(V);
+        }
+        return path;
+      }
+    }
+  };
+
+  // Helper to add models (external code can call this to register)
+  function registerModel(key, modelObj) {
+    Models[key] = modelObj;
+  }
+
+  // ----------------------
+  // Data loading & UI wiring
+  // ----------------------
+  function populateDateSelectors(stock) {
+    const data = stockData[stock];
+    if (!data) return;
+    const ds = data.map(d => d.Date).sort();
+    const start = document.getElementById('start'), end = document.getElementById('end');
+    start.innerHTML = ''; end.innerHTML = '';
+    ds.forEach(d => {
+      const o1 = document.createElement('option'); o1.value=o1.textContent=d;
+      const o2 = o1.cloneNode(true);
+      start.appendChild(o1); end.appendChild(o2);
+    });
+    start.selectedIndex = 0;
+    end.selectedIndex = ds.length-1;
+    updateGlobalParameters();
+  }
+
+  fetch('stock_data_processed.json')
+    .then(r => r.json())
+    .then(data => {
+      stockData = data;
+      const stocks = Object.keys(stockData).sort();
+      const stockSel = document.getElementById('stock');
+      stocks.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s;
+        opt.textContent = s;
+        stockSel.appendChild(opt);
+      });
+      // sensible default if available
+      if (stocks.includes('S&P 500')) {
+        stockSel.value = 'S&P 500';
+        populateDateSelectors('S&P 500');
+      } else if (stocks.length > 0) {
+        populateDateSelectors(stocks[0]);
+      }
+      initTooltips();
+    })
+    .catch(err => {
+      console.error("Failed to load stock data:", err);
+    });
+
+  document.getElementById('stock').addEventListener('change', (e)=> populateDateSelectors(e.target.value));
+  document.getElementById('start').addEventListener('change', ()=> updateGlobalParameters());
+  document.getElementById('end').addEventListener('change', ()=> updateGlobalParameters());
+
+  const methodSel = document.getElementById('method');
+  methodSel.addEventListener('change', ()=> {
+    const val = methodSel.value;
+    // simple show/hide for parameter blocks
+    document.getElementById('gbm').style.display = (val==='gbm' || val==='jump') ? 'block' : 'none';
+    document.getElementById('jump').style.display = (val==='jump') ? 'block' : 'none';
+    document.getElementById('heston').style.display = (val==='heston') ? 'block' : 'none';
+  });
+
+  // ----------------------
+  // Heston calibration (differential evolution)
+  // ----------------------
+  function computeError(simulated, actual) {
+    let error = 0;
+    for (let i = 0; i < actual.length; i++) {
+      error += Math.pow(simulated[i] - actual[i], 2);
+    }
+    return error;
+  }
+
+  function simulateHestonForDE(params, initialPrice, nSteps) {
+    // Helper that simulates underlying price path from price (not portfolio)
+    // We simulate price-like path but reuse existing simulate method and ignore monthly contributions.
+    const dummyInitial = initialPrice;
+    const path = Models.heston.simulate(params, dummyInitial, 0, nSteps, 1/12);
+    return path;
+  }
+
+  function differentialEvolution(prices, {
+      populationSize = 30,
+      generations = 100,
+      F = 0.8,
+      CR = 0.9
+    } = {}) {
+
+      // bounds for [mu, theta, kappa, sigma, rho, v0]
+      const bounds = [
+        [0.0, 0.2],   // mu
+        [0.01, 0.5],  // theta
+        [0.01, 5.0],  // kappa
+        [0.001, 2.0],  // sigma (vol of vol)
+        [-0.99, 0.99], // rho
+        [0.0001, 0.5]  // v0
+      ];
+
+      function randomIndividual() {
+        return bounds.map(([min, max]) => min + Math.random() * (max - min));
+      }
+      function clip(ind) {
+        return ind.map((val, i) => {
+          const [min, max] = bounds[i];
+          return Math.max(min, Math.min(max, val));
+        });
+      }
+
+      let population = Array.from({ length: populationSize }, randomIndividual);
+      let scores = population.map(p => {
+        const sim = simulateHestonForDE(p, prices[0], prices.length-1);
+        return computeError(sim, prices);
+      });
+
+      for (let gen = 0; gen < generations; gen++) {
+        for (let i = 0; i < populationSize; i++) {
+          const indices = [...Array(populationSize).keys()].filter(j => j !== i);
+          const [a, b, c] = indices.sort(() => 0.5 - Math.random()).slice(0, 3);
+          const mutant = clip(population[a].map((val, j) => val + F * (population[b][j] - population[c][j])));
+          const trial = population[i].map((val, j) => Math.random() < CR ? mutant[j] : val);
+          const trialScore = computeError(simulateHestonForDE(trial, prices[0], prices.length-1), prices);
+          if (trialScore < scores[i]) {
+            population[i] = trial;
+            scores[i] = trialScore;
+          }
+        }
+      }
+      const bestIndex = scores.indexOf(Math.min(...scores));
+      return {
+        bestParams: population[bestIndex],
+        bestError: scores[bestIndex]
+      };
+  }
+
+  // ----------------------
+  // Update parameters & compute returns from selected data
+  // ----------------------
+  function updateGlobalParameters() {
+    const start = document.getElementById('start').value;
+    const end = document.getElementById('end').value;
+    const stock = document.getElementById('stock').value;
+    if (_start === start && _end === end && _stock === stock) return;
+    _start = start; _end = end; _stock = stock;
+
+    const div = document.getElementById('muSigma');
+    const df = (stockData[stock] || []).filter(d => d.Date >= start && d.Date <= end);
+    if (df.length < 2) {
+      div.innerHTML = '';
+      return;
+    }
+
+    // compute returns (multiplicative) and log returns
+    returns = [];
+    logReturns = [];
+    for (let i = 1; i < df.length; i++) {
+      const prev = df[i-1].Price;
+      const curr = df[i].Price;
+      returns.push(curr / prev);
+      logReturns.push(Math.log(curr / prev));
+    }
+    dates = df.map(d => new Date(d.Date));
+    const prices = df.map(d => d.Price);
+
+    // statistics
+    const n = logReturns.length;
+    const meanLog = logReturns.reduce((a,b)=>a+b,0)/n;
+    const variance = logReturns.reduce((s,r)=>s+Math.pow(r-meanLog,2),0)/n;
+    const sigmaAnn = Math.sqrt(variance / (1/12)); // annualized
+    const muGBM = ( meanLog / (1/12) + 0.5 * sigmaAnn * sigmaAnn); // annual drift for GBM
+
+    document.getElementById('mean').value = (muGBM*100).toFixed(2);
+    document.getElementById('sigma').value = (sigmaAnn*100).toFixed(2);
+
+    // jumps estimate (for UI defaults)
+    const std = Math.sqrt(variance);
+    const jumpThreshold = 3;
+    const jumps = logReturns.filter(r => Math.abs(r - meanLog) > jumpThreshold * std);
+    const lambda = jumps.length / (n / 12); // approx annual
+    const jumpMu = jumps.length > 0 ? jumps.reduce((a,b)=>a+b,0) / jumps.length : 0;
+    const jumpSigma = jumps.length > 1 ? Math.sqrt(jumps.reduce((sum, r) => sum + Math.pow(r - jumpMu, 2), 0) / (jumps.length - 1)) : 0;
+    document.getElementById('jumpLambda').value = lambda.toFixed(2);
+    document.getElementById('jumpMu').value = (jumpMu*100).toFixed(2);
+    document.getElementById('jumpSigma').value = (jumpSigma*100).toFixed(2);
+
+    // Attempt Heston calibration on price path (may be slow for long series)
+    try {
+      const result = differentialEvolution(prices, { populationSize: 40, generations: 120 });
+      const [h_mu, theta, kappa, h_sigma, rho, v0] = result.bestParams;
+      document.getElementById('hMu').value = h_mu.toFixed(3);
+      document.getElementById('hTheta').value = theta.toFixed(3);
+      document.getElementById('hKappa').value = kappa.toFixed(3);
+      document.getElementById('hSigma').value = h_sigma.toFixed(3);
+      document.getElementById('hRho').value = rho.toFixed(3);
+      document.getElementById('hV0').value = v0.toFixed(3);
+    } catch (e) {
+      console.warn("Heston calibration failed or was too slow:", e);
+    }
+
+    // update visualizations for selected data
+    visualizeStock();
+  }
+
+  // ----------------------
+  // Visualization utilities
+  // ----------------------
+  function visualizeStock() {
+    if (!_stock || !stockData[_stock]) return;
+    const df_all = stockData[_stock];
+    // histogram of returns (selected)
+    const returns_percentage = returns.map(x => (x - 1)*100);
+    Plotly.newPlot('hist', [{ x: returns_percentage, type: 'histogram', nbinsx: 40, marker: { color: 'gray' } }],
+      { title: `${_stock} (${_start} - ${_end})`, xaxis: { title: 'Kuukausituotto-%' }, yaxis: { title: 'Frekvenssi' } });
+
+    // full timeline returns
+    const all_returns_percentage = [];
+    for (let i = 1; i < df_all.length; i++) {
+      all_returns_percentage.push((df_all[i].Price / df_all[i-1].Price - 1)*100);
+    }
+    const all_dates = df_all.map(d => new Date(d.Date)).slice(0, df_all.length-1);
+
+    Plotly.newPlot('timeline', [
+      { x: all_dates, y: all_returns_percentage, type: 'scatter', mode: 'lines', line: { color: 'gray' }, name: 'Koko aikasarja' },
+      { x: dates.slice(0, dates.length-1), y: returns_percentage, type: 'scatter', mode: 'lines', line: { color: 'red' }, name: 'Valittu jakso' }
+    ], {
+      title: `${_stock}`,
+      xaxis: { title: 'Kuukausi' },
+      yaxis: { title: 'Kuukausituotto-%' },
+      legend: { orientation: 'h', y: 1.05 }
+    });
+
+    // rolling mean/std (12-month window) on full series
+    const windowSize = 12;
+    const rollingMean = [];
+    const rollingStd = [];
+    for (let i = 0; i < all_returns_percentage.length; i++) {
+      if (i < windowSize - 1) {
+        rollingMean.push(null);
+        rollingStd.push(null);
+      } else {
+        const window = all_returns_percentage.slice(i - windowSize + 1, i + 1);
+        const mean = window.reduce((a,b)=>a+b,0)/window.length;
+        const std = Math.sqrt(window.map(v => (v - mean)**2).reduce((a,b)=>a+b,0)/window.length);
+        rollingMean.push(mean);
+        rollingStd.push(std);
+      }
+    }
+    Plotly.newPlot('timeline-smoothed', [
+      { x: all_dates, y: rollingMean, type:'scatter', mode:'lines', line:{color:'gray'}, name:'Tuottojen keskiarvo (12kk)'},
+      { x: all_dates, y: rollingStd, type:'scatter', mode:'lines', line:{color:'blue'}, name:'Tuottojen keskihajonta (12kk)'}
+    ], { title: `${_stock}`, xaxis:{title:'Kuukausi'}, yaxis:{title:'Kuukausituotto-%'}, legend:{orientation:'h', y:1.05} });
+
+    // boxplots by decade
+    const decades = {};
+    for (let i = 0; i < all_dates.length; i++) {
+      const year = new Date(all_dates[i]).getFullYear();
+      const decade = Math.floor(year/10)*10;
+      if (!decades[decade]) decades[decade]=[];
+      decades[decade].push(all_returns_percentage[i]);
+    }
+    const boxDecadeTraces = Object.keys(decades).map(dec => ({
+      y: decades[dec],
+      type: 'box',
+      name: `${dec}s`,
+      boxpoints: 'outliers',
+      marker: { color: 'lightgray' },
+      line: { color: 'gray' }
+    }));
+    Plotly.newPlot('boxplot-decade', boxDecadeTraces, { title: `${_stock} - Tuottojakaumat vuosikymmenittäin`, yaxis:{title:'Kuukausituotto-%'}, showlegend:false });
+
+    // monthly boxplots (all vs selected)
+    const monthGroupsAll = Array.from({length:12}, () => []);
+    const monthGroupsSel = Array.from({length:12}, () => []);
+    for (let i = 0; i < all_dates.length; i++) monthGroupsAll[new Date(all_dates[i]).getMonth()].push(all_returns_percentage[i]);
+    for (let i = 0; i < dates.length-1; i++) monthGroupsSel[new Date(dates[i]).getMonth()].push(returns_percentage[i]);
+    const months = ['Tammi','Helmi','Maalis','Huhti','Touko','Kesä','Heinä','Elo','Syys','Loka','Marras','Joulu'];
+    const monthlyBoxTraces = months.map((mName,i)=>({
+      y: monthGroupsAll[i], type:'box', name:mName, boxpoints:'outliers', marker:{color:'lightgray'}, line:{color:'gray'}, opacity:0.5
+    })).concat(months.map((mName,i)=>({
+      y: monthGroupsSel[i], type:'box', name:mName, boxpoints:'outliers', marker:{color:'red'}, line:{color:'red'}, opacity:0.7
+    })));
+    Plotly.newPlot('boxplot-month', monthlyBoxTraces, { title: `${_stock} - Kuukausituottojen jakauma`, yaxis:{title:'Kuukausituotto-%'}, boxmode:'overlay', showlegend:false });
+  }
+
+  // ----------------------
+  // Simulation entrypoint
+  // ----------------------
+  function simulate() {
+    // read inputs
+    const initial = +document.getElementById('initial').value;
+    const monthly = +document.getElementById('monthly').value;
+    const years = +document.getElementById('years').value;
+    const nSteps = Math.round(years * 12);
+    const method = document.getElementById('method').value;
+    const nSim = +document.getElementById('numSim').value;
+    const nShow = +document.getElementById('numShow').value;
+    const dt = 1/12;
+    const showActual = document.getElementById('showActual').checked;
+
+    // collect params per method
+    const mu = +document.getElementById('mean').value/100;
+    const sigma = +document.getElementById('sigma').value/100;
+    const lambda = +document.getElementById('jumpLambda').value;
+    const jumpMu = +document.getElementById('jumpMu').value/100;
+    const jumpSigma = +document.getElementById('jumpSigma').value/100;
+
+    const h_mu = +document.getElementById('hMu').value;
+    const theta = +document.getElementById('hTheta').value;
+    const kappa = +document.getElementById('hKappa').value;
+    const h_sigma = +document.getElementById('hSigma').value;
+    const rho = +document.getElementById('hRho').value;
+    const v0 = +document.getElementById('hV0').value;
+
+    // build param array for the chosen model
+    function paramsForModel(name) {
+      if (name === 'gbm') return [mu, sigma];
+      if (name === 'jump') return [mu, sigma, lambda, jumpMu, jumpSigma];
+      if (name === 'heston') return [h_mu, theta, kappa, h_sigma, rho, v0];
+      return []; // resample methods don't need params
+    }
+
+    const model = Models[method];
+    if (!model) {
+      alert('Valittu malli ei ole rekisterissä.');
+      return;
+    }
+
+    // simulate
+    const paths = [];
+    const seqTraces = [];
+    for (let s=0; s<nSim; s++) {
+      try {
+        const path = model.simulate(paramsForModel(method), initial, monthly, nSteps, dt);
+        paths.push(path);
+      } catch (e) {
+        console.error("Simulation failed for model", method, e);
+      }
+    }
+
+    // compute quantiles and median per time step
+    const median = [], lower = [], upper = [];
+    for (let i=0;i<=nSteps;i++){
+      const arr = paths.map(p => p[i]);
+      median.push(math.median(arr));
+      lower.push(math.quantileSeq(arr, 0.10));
+      upper.push(math.quantileSeq(arr, 0.90));
+    }
+
+    // actual replicant using historical returns in cyclic order
+    let actual = [initial];
+    let idx = 0;
+    for (let i=1;i<=nSteps;i++){
+      const r = returns[idx % returns.length];
+      idx++;
+      actual.push((actual[i-1] + monthly) * r);
+    }
+
+    // prepare traces
+    let traces = [];
+    // show some sample simulations
+    traces = paths.slice(0, nShow).map(p=>({
+      x: Array.from({length:nSteps+1}, (_,i)=>i/12),
+      y: p,
+      mode: 'lines',
+      line: { color: 'lightgray', width: 1 },
+      showlegend: false
+    }));
+
+    const xArray = Array.from({length:nSteps+1}, (_,i)=>i/12);
+    traces.push({ x: xArray, y: lower, mode:'lines', line:{color:'lightblue', width:0}, showlegend:false });
+    traces.push({ x: xArray, y: upper, mode:'lines', line:{color:'lightblue', width:0}, fill:'tonexty', name:'10–90% CI' });
+    traces.push({ x: xArray, y: median, mode:'lines', line:{color:'black', width:3}, name:'Mediaani' });
+    if (showActual) traces.push({ x: xArray, y: actual, mode:'lines', line:{color:'blue', width:3}, name:`Todellinen pörssidata ${_start} ->` });
+
+    const yHigh = Math.min(Math.max(...upper), 3*Math.max(...median));
+
+    Plotly.newPlot('plot', traces, {
+      title: `${_stock} (${_start} - ${_end}) <br> Matemaattinen malli: ${model.name} <br> alussa ${initial}€ + säästöön ${monthly}€/kk`,
+      xaxis: { title: 'Aika (vuosissa)' },
+      yaxis: { title: 'Kokonaisvarallisuus (€)', range: [0, yHigh], constrain: 'range', fixedrange: true },
+      legend: { orientation: 'h', y: 0.95 },
+      margin: { t: 60 }
+    });
+
+    // update other small visualizations
+    visualizeStock();
+  }
+
+  function downloadPlot() {
+    Plotly.toImage(document.getElementById('plot'), { format: 'png', height: 500, width: 1000 })
+      .then(function(dataUrl) {
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = 'markkinasimulaatio.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      });
+  }
+
+  document.getElementById('simulateBtn').onclick = simulate;
+  document.getElementById('downloadBtn').onclick = downloadPlot;
+
+  // Expose registerModel for easy extension by copying a small snippet:
+  // <script>
+  //   registerModel('myModel', { name:'My Model', simulate: function(params, initial, monthly, nSteps, dt){ ... }});
+  // </script>
+
+  </script>
+
+  <div class="theory">
+    <h3>Simulointimenetelmien teoria</h3>
+
+    <div class="method">
+      <b>1. GBM (Geometric Brownian Motion)</b><br>
+      Hinnan kehitys:
+      $$ dS_t = \mu S_t dt + \sigma S_t dW_t $$
+      missä $W_t$ on Wiener-prosessi. Estimoidut parametrit $\mu$ ja $\sigma$ lasketaan datasta.
+      Lähde: <a class="ref" href="https://en.wikipedia.org/wiki/Geometric_Brownian_motion" target="_blank">Wikipedia: GBM</a>
+    </div>
+
+    <div class="method">
+      <b>2. Jump Diffusion (Merton)</b><br>
+      Malli lisää Poisson-hyppyjä normaalin GBM -liikkeen päälle.
+      Lähde: <a class="ref" href="https://en.wikipedia.org/wiki/Jump_diffusion" target="_blank">Wikipedia: Jump Diffusion</a>
+    </div>
+
+    <div class="method">
+      <b>3. Heston</b><br>
+      Heston-malli on stokastisen volatiliteetin malli, jossa volatiliteetin varianssi seuraa mean-reverting -prosessia.
+      (Parametrien kuvaus löytyy UI:ssa.)
+    </div>
+
+    <div class="method">
+      <b>4. Resample (Random / Sequential)</b><br>
+      Historiallisista kuukausituotoista joko arvotaan satunnainen tuotto joka askeleelle tai valitaan satunnainen aloitusindeksi ja kierrätetään peräkkäisiä tuottoja.
+    </div>
+  </div>
+
+</body>
+</html>
