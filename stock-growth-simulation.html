@@ -5,7 +5,7 @@
   <title>Sijoitussimulaattori</title>
 
   <!-- Plotly -->
-  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
 
   <!-- MathJax -->
   <script type="text/x-mathjax-config">
@@ -211,7 +211,9 @@
   let returns = [];        // multiplicative returns per month (e.g. 1.02)
   let logReturns = [];     // log returns
   let dates = [];
+  let selectedPrices = []; // price path of the selected range (for Heston calibration)
   let _start = null, _end = null, _stock = null;
+  let _hestonKey = null;   // selection key the Heston params were last calibrated for
 
   function initTooltips() {
     document.querySelectorAll('.tooltip-btn').forEach(btn=>{
@@ -383,6 +385,7 @@
     document.getElementById('gbm').style.display = (val==='gbm' || val==='jump') ? 'block' : 'none';
     document.getElementById('jump').style.display = (val==='jump') ? 'block' : 'none';
     document.getElementById('heston').style.display = (val==='heston') ? 'block' : 'none';
+    if (val === 'heston') calibrateHeston();
   });
 
   // ----------------------
@@ -470,6 +473,12 @@
     const div = document.getElementById('muSigma');
     const df = (stockData[stock] || []).filter(d => d.Date >= start && d.Date <= end);
     if (df.length < 2) {
+      // Not enough data in the selected range: clear derived state so nothing
+      // downstream simulates on stale returns from a previous selection.
+      returns = [];
+      logReturns = [];
+      dates = [];
+      selectedPrices = [];
       div.innerHTML = '';
       return;
     }
@@ -484,7 +493,7 @@
       logReturns.push(Math.log(curr / prev));
     }
     dates = df.map(d => new Date(d.Date));
-    const prices = df.map(d => d.Price);
+    selectedPrices = df.map(d => d.Price);
 
     // statistics
     const n = logReturns.length;
@@ -507,9 +516,24 @@
     document.getElementById('jumpMu').value = (jumpMu*100).toFixed(2);
     document.getElementById('jumpSigma').value = (jumpSigma*100).toFixed(2);
 
-    // Attempt Heston calibration on price path (may be slow for long series)
+    // Heston calibration (differential evolution) is expensive and would block
+    // the UI on load and on every selection change. Defer it until the Heston
+    // model is actually selected; calibrateHeston() runs it lazily and caches
+    // the result per selection.
+    _hestonKey = null;
+
+    // update visualizations for selected data
+    visualizeStock();
+  }
+
+  // Calibrate Heston parameters for the current selection, at most once per
+  // selection. Called lazily when the user chooses/simulates the Heston model.
+  function calibrateHeston() {
+    if (selectedPrices.length < 3) return;
+    const key = `${_stock}|${_start}|${_end}`;
+    if (_hestonKey === key) return; // already calibrated for this selection
     try {
-      const result = differentialEvolution(prices, { populationSize: 40, generations: 120 });
+      const result = differentialEvolution(selectedPrices, { populationSize: 40, generations: 120 });
       const [h_mu, theta, kappa, h_sigma, rho, v0] = result.bestParams;
       document.getElementById('hMu').value = h_mu.toFixed(3);
       document.getElementById('hTheta').value = theta.toFixed(3);
@@ -517,12 +541,10 @@
       document.getElementById('hSigma').value = h_sigma.toFixed(3);
       document.getElementById('hRho').value = rho.toFixed(3);
       document.getElementById('hV0').value = v0.toFixed(3);
+      _hestonKey = key;
     } catch (e) {
       console.warn("Heston calibration failed or was too slow:", e);
     }
-
-    // update visualizations for selected data
-    visualizeStock();
   }
 
   // ----------------------
@@ -621,6 +643,10 @@
     const dt = 1/12;
     const showActual = document.getElementById('showActual').checked;
 
+    // Heston reads calibrated params below, so calibrate (lazily, cached per
+    // selection) before those values are read from the DOM.
+    if (method === 'heston') calibrateHeston();
+
     // collect params per method
     const mu = +document.getElementById('mean').value/100;
     const sigma = +document.getElementById('sigma').value/100;
@@ -649,9 +675,20 @@
       return;
     }
 
+    if (!(nSteps > 0) || !(nSim > 0)) {
+      alert('Tarkista sijoitusaika ja satunnaistoistojen määrä.');
+      return;
+    }
+
+    // Resampling and the actual-data comparison need historical returns.
+    const usesHistory = (method === 'resample_random' || method === 'resample_seq');
+    if ((usesHistory || showActual) && returns.length === 0) {
+      alert('Valitulle aikavälille ei ole tarpeeksi dataa. Valitse pidempi jakso.');
+      return;
+    }
+
     // simulate
     const paths = [];
-    const seqTraces = [];
     for (let s=0; s<nSim; s++) {
       try {
         const path = model.simulate(paramsForModel(method), initial, monthly, nSteps, dt);
@@ -659,6 +696,11 @@
       } catch (e) {
         console.error("Simulation failed for model", method, e);
       }
+    }
+
+    if (paths.length === 0) {
+      alert('Simulointi epäonnistui. Tarkista mallin parametrit.');
+      return;
     }
 
     // compute quantiles and median per time step
@@ -671,12 +713,15 @@
     }
 
     // actual replicant using historical returns in cyclic order
-    let actual = [initial];
-    let idx = 0;
-    for (let i=1;i<=nSteps;i++){
-      const r = returns[idx % returns.length];
-      idx++;
-      actual.push((actual[i-1] + monthly) * r);
+    let actual = null;
+    if (showActual && returns.length > 0) {
+      actual = [initial];
+      let idx = 0;
+      for (let i=1;i<=nSteps;i++){
+        const r = returns[idx % returns.length];
+        idx++;
+        actual.push((actual[i-1] + monthly) * r);
+      }
     }
 
     // prepare traces
@@ -694,7 +739,7 @@
     traces.push({ x: xArray, y: lower, mode:'lines', line:{color:'lightblue', width:0}, showlegend:false });
     traces.push({ x: xArray, y: upper, mode:'lines', line:{color:'lightblue', width:0}, fill:'tonexty', name:'10–90% CI' });
     traces.push({ x: xArray, y: median, mode:'lines', line:{color:'black', width:3}, name:'Mediaani' });
-    if (showActual) traces.push({ x: xArray, y: actual, mode:'lines', line:{color:'blue', width:3}, name:`Todellinen pörssidata ${_start} ->` });
+    if (actual) traces.push({ x: xArray, y: actual, mode:'lines', line:{color:'blue', width:3}, name:`Todellinen pörssidata ${_start} ->` });
 
     const yHigh = Math.min(Math.max(...upper), 3*Math.max(...median));
 

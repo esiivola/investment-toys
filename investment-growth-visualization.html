@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     
     <!-- Libraries -->
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-MML-AM_CHTML" async></script>
     <script type="text/x-mathjax-config">
         MathJax.Hub.Config({
@@ -96,7 +96,7 @@
     <div class="text-group">
         <p>Vuosituotosta $R$ saadaan laskettua kuukausituotto kaavalla $r = (1+R)^{1/12}-1$</p>
         <p>Alkuinvestoinnin $A$ tuotto $n$ kuukauden jälkeen on $A(1+r)^n$</p>
-        <p>Kuukausisäästön $I$, joka on sijoitettu kuukautena $m$ tuotto $n$ kuukauden lopussa ($m\\leq n$) on $I(1+r)^{n-m+1}$</p>
+        <p>Kuukausisäästön $I$, joka on sijoitettu kuukautena $m$ tuotto $n$ kuukauden lopussa ($m \leq n$) on $I(1+r)^{n-m+1}$</p>
         <p>Kaikkien kuukausi-investointien tuotto $n$ kuukauden jälkeen muodostaa geometrisen sarjan summan:</p>
         <p>$$\sum_{i=1}^n I(1+r)^{n-i+1} = I(1+r)\frac{(1+r)^n-1}{r}$$</p>
         <p>Näinollen koko sijoitusstrategian tuotto $n$ kuukauden jälkeen on $$A(1+r)^n + I(1+r)\frac{(1+r)^n-1}{r}$$</p>
@@ -148,15 +148,19 @@
             ];
 
             /** Compute investment growth */
-            function computeValues(initial, monthly, annualRate, years) {
+            function computeValues(initial, monthly, annualRate) {
                 const monthlyRate = Math.pow(1 + annualRate / 100, 1 / 12) - 1;
                 const tValues = [];
                 const fValues = [];
                 for (let t = 0; t <= maxYears * 12; t++) {
                     tValues.push(t / 12);
-                    const f =
-                        initial * Math.pow(1 + monthlyRate, t) +
-                        monthly * (1 + monthlyRate) * (Math.pow(1 + monthlyRate, t) - 1) / monthlyRate;
+                    // The geometric-series formula divides by the monthly rate, so a 0%
+                    // annual return would produce NaN. Fall back to its r->0 limit
+                    // (no compounding, just the sum of contributions).
+                    const f = monthlyRate === 0
+                        ? initial + monthly * t
+                        : initial * Math.pow(1 + monthlyRate, t) +
+                          monthly * (1 + monthlyRate) * (Math.pow(1 + monthlyRate, t) - 1) / monthlyRate;
                     fValues.push(f);
                 }
                 return { tValues, fValues };
@@ -169,21 +173,25 @@
                 const monthlyInvestment = Utils.parseNumber(document.getElementById('monthly_investment').value);
                 const initial = Utils.parseNumber(document.getElementById('initial_money').value);
 
-                const { tValues, fValues } = computeValues(initial, monthlyInvestment, annualRate, years);
-                maxY = Math.max(maxY, fValues[years * 12]);
+                const viewYears = years > 0 ? years : 1;
+                const { tValues, fValues } = computeValues(initial, monthlyInvestment, annualRate);
+                // Clamp the sample index so a fractional or out-of-range horizon can't
+                // read past the array (which would make maxY, and the y-axis, NaN).
+                const endIdx = Math.min(fValues.length - 1, Math.round(viewYears * 12));
+                maxY = Math.max(maxY, fValues[endIdx]);
 
                 const color = colors[colorIndex++ % colors.length];
                 const name = `alussa ${Utils.formatNumber(initial)}€; säästöön ${Utils.formatNumber(monthlyInvestment)}€/kk; vuosituotto-% ${Utils.formatNumber(annualRate)}`;
 
                 traces.push({ x: tValues, y: fValues, mode: 'lines', name, line: { color } });
-                renderPlot(years);
+                renderPlot(viewYears);
             }
 
-            /** Render the plot with all current traces */
-            function renderPlot(maxYears) {
+            /** Render the plot with all current traces (viewYears = x-axis span) */
+            function renderPlot(viewYears) {
                 Plotly.newPlot('plot', traces, {
                     title: 'Kokonaisvarallisuus ajan funktiona',
-                    xaxis: { title: 'Aika (vuosissa)', range: [0, maxYears] },
+                    xaxis: { title: 'Aika (vuosissa)', range: [0, viewYears] },
                     yaxis: { title: 'Varallisuus (€)', range: [0, maxY] },
                     legend: { orientation: 'h', y: 1.1 },
                     margin: { t: 60 }
