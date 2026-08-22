@@ -58,8 +58,11 @@
         <label>Alkupääoma (€)</label>
         <input id="initial" type="number" value="10000" min="0" step="5000">
 
-        <label>Kuukausisijoitus (€)</label>
+        <label>Sijoitus per sijoituskerta (€)</label>
         <input id="monthly" type="number" value="500" min="0" step="100">
+
+        <label>Sijoitusväli (kuukausissa)</label>
+        <input id="interval" type="number" value="1" min="1" step="1">
 
         <label>Sijoitusaika (vuosissa)</label>
         <input id="years" type="number" value="30" min="1" step="5">
@@ -238,20 +241,27 @@
 
   // ----------------------
   // Model registry (extensible)
-  // Each model must implement simulate(params, initial, monthly, nSteps, dt)
+  // Each model must implement simulate(params, initial, monthly, nSteps, dt, freq)
+  // `monthly` is contributed every `freq` months (first contribution at step 1);
+  // `freq` defaults to 1 (contribute every month) when omitted.
   // It should return an array of length nSteps+1 with portfolio values (first element initial).
   // ----------------------
+  // Contribution for step i (1-based): `monthly` on interval steps, else 0.
+  function contribAt(i, monthly, freq) {
+    return ((i - 1) % (freq >= 1 ? Math.round(freq) : 1) === 0) ? monthly : 0;
+  }
+
   const Models = {
     gbm: {
       name: "GBM",
-      simulate: function(params, initial, monthly, nSteps, dt) {
+      simulate: function(params, initial, monthly, nSteps, dt, freq=1) {
         const [mu, sigma] = params;
         let V = initial;
         const path = [V];
         for (let i=1;i<=nSteps;i++){
           const z = randn_bm();
           const r = (mu - 0.5*sigma*sigma)*dt + sigma*Math.sqrt(dt)*z;
-          V = (V + monthly) * Math.exp(r);
+          V = (V + contribAt(i, monthly, freq)) * Math.exp(r);
           path.push(V);
         }
         return path;
@@ -259,7 +269,7 @@
     },
     jump: {
       name: "Jump Diffusion",
-      simulate: function(params, initial, monthly, nSteps, dt) {
+      simulate: function(params, initial, monthly, nSteps, dt, freq=1) {
         const [mu, sigma, lambda, jumpMu, jumpSigma] = params;
         let V = initial;
         const path = [V];
@@ -267,7 +277,7 @@
           const z = randn_bm();
           const jump = (Math.random() < lambda) ? (jumpMu + jumpSigma*randn_bm()) : 0;
           const r = (mu - 0.5*sigma*sigma)*dt + sigma*Math.sqrt(dt)*z + jump;
-          V = (V + monthly) * Math.exp(r);
+          V = (V + contribAt(i, monthly, freq)) * Math.exp(r);
           path.push(V);
         }
         return path;
@@ -275,7 +285,7 @@
     },
     heston: {
       name: "Heston",
-      simulate: function(params, initial, monthly, nSteps, dt=1/12) {
+      simulate: function(params, initial, monthly, nSteps, dt=1/12, freq=1) {
         // params: [mu, theta, kappa, sigma, rho, v0]
         const [mu, theta, kappa, volSigma, rho, v0] = params;
         let V = initial;
@@ -288,7 +298,7 @@
           const W2 = rho*Z1 + Math.sqrt(Math.max(0,1-rho*rho))*Z2;
           const R = Math.exp((mu - 0.5*v)*dt + Math.sqrt(Math.max(0,v))*Math.sqrt(dt)*W1);
           v = Math.abs(v + kappa*(theta - v)*dt + volSigma*Math.sqrt(Math.max(0,v))*Math.sqrt(dt)*W2);
-          V = (V + monthly) * R;
+          V = (V + contribAt(i, monthly, freq)) * R;
           path.push(V);
         }
         return path;
@@ -296,13 +306,13 @@
     },
     resample_random: {
       name: "Resample (Random Returns)",
-      simulate: function(params, initial, monthly, nSteps, dt) {
+      simulate: function(params, initial, monthly, nSteps, dt, freq=1) {
         // params unused; uses global `returns`
         let V = initial;
         const path = [V];
         for (let i=1;i<=nSteps;i++){
           const r = returns[Math.floor(Math.random()*returns.length)];
-          V = (V + monthly) * r;
+          V = (V + contribAt(i, monthly, freq)) * r;
           path.push(V);
         }
         return path;
@@ -310,14 +320,14 @@
     },
     resample_seq: {
       name: "Resample (Sequential)",
-      simulate: function(params, initial, monthly, nSteps, dt) {
+      simulate: function(params, initial, monthly, nSteps, dt, freq=1) {
         let startIdx = Math.floor(Math.random() * Math.max(1, returns.length));
         let V = initial;
         const path = [V];
         for (let i=1;i<=nSteps;i++){
           const r = returns[startIdx % returns.length];
           startIdx++;
-          V = (V + monthly) * r;
+          V = (V + contribAt(i, monthly, freq)) * r;
           path.push(V);
         }
         return path;
@@ -635,6 +645,8 @@
     // read inputs
     const initial = +document.getElementById('initial').value;
     const monthly = +document.getElementById('monthly').value;
+    const intervalRaw = +document.getElementById('interval').value;
+    const freq = intervalRaw >= 1 ? Math.round(intervalRaw) : 1;
     const years = +document.getElementById('years').value;
     const nSteps = Math.round(years * 12);
     const method = document.getElementById('method').value;
@@ -691,7 +703,7 @@
     const paths = [];
     for (let s=0; s<nSim; s++) {
       try {
-        const path = model.simulate(paramsForModel(method), initial, monthly, nSteps, dt);
+        const path = model.simulate(paramsForModel(method), initial, monthly, nSteps, dt, freq);
         paths.push(path);
       } catch (e) {
         console.error("Simulation failed for model", method, e);
@@ -720,7 +732,7 @@
       for (let i=1;i<=nSteps;i++){
         const r = returns[idx % returns.length];
         idx++;
-        actual.push((actual[i-1] + monthly) * r);
+        actual.push((actual[i-1] + contribAt(i, monthly, freq)) * r);
       }
     }
 
@@ -744,7 +756,7 @@
     const yHigh = Math.min(Math.max(...upper), 3*Math.max(...median));
 
     Plotly.newPlot('plot', traces, {
-      title: `${_stock} (${_start} - ${_end}) <br> Matemaattinen malli: ${model.name} <br> alussa ${initial}€ + säästöön ${monthly}€/kk`,
+      title: `${_stock} (${_start} - ${_end}) <br> Matemaattinen malli: ${model.name} <br> alussa ${initial}€ + säästöön ${monthly}€ / ${freq}kk`,
       xaxis: { title: 'Aika (vuosissa)' },
       yaxis: { title: 'Kokonaisvarallisuus (€)', range: [0, yHigh], constrain: 'range', fixedrange: true },
       legend: { orientation: 'h', y: 0.95 },
